@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Runner Galactic 3D</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #101018; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        #hud {
+            position: absolute;
+            left: 20px;
+            bottom: 20px;
+            color: white;
+            pointer-events: none;
+            user-select: none;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .stats {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 15px;
+            display: flex;
+            gap: 20px;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.85);
+            padding: 40px;
+            border-radius: 30px;
+            text-align: center;
+            border: 2px solid #ff4d4d;
+            box-shadow: 0 0 30px rgba(255, 77, 77, 0.3);
+            display: none;
+            pointer-events: auto;
+        }
+
+        .game-over h2 { color: #ff4d4d; font-size: 3rem; margin: 0 0 20px; }
+        .game-over button {
+            background: #00ffcc;
+            color: #101018;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .game-over button:hover { transform: scale(1.1); }
+        
+        .controls-hint {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 15px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        <div class="stats">
+            <div><b>SCORE:</b> <span id="score">0</span></div>
+            <div><b>BEST:</b> <span id="best">0</span></div>
+            <div><b>SPEED:</b> <span id="speed">7.0</span></div>
+        </div>
+        <div class="controls-hint">← → Moverse · ESPACIO Saltar</div>
+    </div>
+
+    <div id="game-over" class="game-over">
+        <h2>GAME OVER</h2>
+        <div style="margin-bottom: 20px;">
+            <p style="color: white; font-size: 1.5rem; margin: 5px 0;">PUNTOS: <span id="final-score" style="color: #00ffcc; font-weight: 800;">0</span></p>
+            <p style="color: #aaa; font-size: 1rem; margin: 5px 0;">MEJOR: <span id="record-score">0</span></p>
+        </div>
+        <div style="display: flex; gap: 10px; justify-content: center;">
+            <button onclick="saveAndFinish(this)" style="background: #2563eb; color: white; padding: 12px 25px; border-radius: 12px; font-weight: 800; cursor: pointer; border: none;">GUARDAR RÉCORD</button>
+            <button onclick="restartGame()" style="background: #4b5563; color: white; padding: 12px 25px; border-radius: 12px; font-weight: 800; cursor: pointer; border: none;">REINTENTAR</button>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, clock;
+        let player, ground;
+        const obstacles = [];
+        const LANES = [-2, 0, 2];
+        const SPAWN_Z = -35;
+        const DESPAWN_Z = 10;
+        const PLAYER_Z = 0;
+        const GRAVITY = -20;
+        const JUMP_V = 9.5;
+        
+        let score = 0;
+        let best = parseInt(localStorage.getItem('bestScore') || 0);
+        let speed = 7;
+        let isGameOver = false;
+        let obstacleTimer = 0;
+        let animationId;
+
+        const playerBox = new THREE.Box3();
+        const tempBox = new THREE.Box3();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x101018);
+            scene.fog = new THREE.Fog(0x101018, 12, 55);
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 200);
+            camera.position.set(0, 4.2, 8);
+            camera.lookAt(0, 1, -6);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+            const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+            dir.position.set(6, 10, 6);
+            dir.castShadow = true;
+            scene.add(dir);
+
+            // Suelo
+            const groundGeo = new THREE.BoxGeometry(8, 0.3, 80);
+            const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a2a3a, roughness: 0.9 });
+            ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.position.set(0, -0.15, -20);
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // Raíles
+            const railGeo = new THREE.BoxGeometry(0.15, 0.4, 80);
+            const railMat = new THREE.MeshStandardMaterial({ color: 0x5a5aff, roughness: 0.6 });
+            const leftRail = new THREE.Mesh(railGeo, railMat);
+            const rightRail = new THREE.Mesh(railGeo, railMat);
+            leftRail.position.set(-4, 0.1, -20);
+            rightRail.position.set(4, 0.1, -20);
+            scene.add(leftRail, rightRail);
+
+            // Jugador
+            const playerGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+            const playerMat = new THREE.MeshStandardMaterial({ color: 0x00ffcc, metalness: 0.2, roughness: 0.4 });
+            player = new THREE.Mesh(playerGeo, playerMat);
+            player.castShadow = true;
+            player.position.set(0, 0.45, PLAYER_Z);
+            player.userData = { targetX: 0, isJumping: false, vy: 0, groundY: 0.45 };
+            scene.add(player);
+
+            clock = new THREE.Clock();
+            document.getElementById('best').innerText = best;
+
+            window.addEventListener('resize', onResize);
+            window.addEventListener('keydown', onKeyDown);
+            
+            animate();
+        }
+
+        function onKeyDown(e) {
+            if (isGameOver) return;
+            if (e.code === 'ArrowLeft' || e.key === 'a') moveLane(-1);
+            if (e.code === 'ArrowRight' || e.key === 'd') moveLane(1);
+            if (e.code === 'Space') jump();
+        }
+
+        function moveLane(dir) {
+            const laneIndex = LANES.indexOf(player.userData.targetX);
+            const nextIndex = Math.min(Math.max(laneIndex + dir, 0), LANES.length - 1);
+            player.userData.targetX = LANES[nextIndex];
+        }
+
+        function jump() {
+            if (player.userData.isJumping) return;
+            player.userData.isJumping = true;
+            player.userData.vy = JUMP_V;
+        }
+
+        function spawnObstacle() {
+            const geometry = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+            const material = new THREE.MeshStandardMaterial({ color: 0xff4d4d, metalness: 0.1, roughness: 0.5 });
+            const o = new THREE.Mesh(geometry, material);
+            o.castShadow = true;
+            o.position.set(LANES[Math.floor(Math.random() * LANES.length)], 0.45, SPAWN_Z);
+            obstacles.push(o);
+            scene.add(o);
+        }
+
+        function update(dt) {
+            if (isGameOver) return;
+
+            // Movimiento lateral suave pero con la misma visual de antes
+            // Para mantener la estética, usamos interpolación directa
+            player.position.x += (player.userData.targetX - player.position.x) * 12 * dt;
+
+            if (player.userData.isJumping) {
+                player.userData.vy += GRAVITY * dt;
+                player.position.y += player.userData.vy * dt;
+                if (player.position.y <= player.userData.groundY) {
+                    player.position.y = player.userData.groundY;
+                    player.userData.isJumping = false;
+                }
+            }
+
+            speed = Math.min(50, speed + dt * 0.25);
+            obstacleTimer += dt;
+            if (obstacleTimer >= 0.9) {
+                obstacleTimer = 0;
+                spawnObstacle();
+            }
+
+            const dz = speed * dt;
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const o = obstacles[i];
+                o.position.z += dz;
+                if (o.position.z > DESPAWN_Z) {
+                    scene.remove(o);
+                    obstacles.splice(i, 1);
+                }
+            }
+            ground.position.z += dz;
+            if (ground.position.z > 0) ground.position.z = -20;
+
+            playerBox.setFromObject(player);
+            for (let o of obstacles) {
+                tempBox.setFromObject(o);
+                if (playerBox.intersectsBox(tempBox)) {
+                    endGame();
+                    return;
+                }
+            }
+
+            score += dt * 10;
+            updateHUD();
+        }
+
+        function updateHUD() {
+            const displayScore = Math.floor(score);
+            document.getElementById('score').innerText = displayScore;
+            document.getElementById('speed').innerText = speed.toFixed(1);
+            // IMPORTANTE: Comunicación con Laravel
+            window.parent.postMessage({ type: 'GAME_SCORE', score: displayScore }, '*');
+        }
+
+        function endGame() {
+            isGameOver = true;
+            const finalScore = Math.floor(score);
+            if (finalScore > best) {
+                best = finalScore;
+                localStorage.setItem('bestScore', best);
+            }
+            document.getElementById('final-score').innerText = finalScore;
+            document.getElementById('record-score').innerText = best;
+            document.getElementById('game-over').style.display = 'block';
+        }
+
+        function saveAndFinish(btn) {
+            const finalScore = Math.floor(score);
+            const bestRecord = parseInt(localStorage.getItem('bestScore') || finalScore);
+            
+            // NOTIFICAR A LARAVEL QUE HA TERMINADO Y GUARDAR CON RÉCORD
+            window.parent.postMessage({ 
+                type: 'GAME_OVER', 
+                score: finalScore,
+                best_score: bestRecord
+            }, '*');
+            
+            // Efecto visual de guardado
+            btn.innerText = "¡RÉCORD GUARDADO!";
+            btn.style.background = "#22c55e"; 
+            btn.disabled = true;
+            
+            // Redirigir al historial después de un breve momento
+            setTimeout(() => {
+                window.parent.location.href = '/player/history';
+            }, 1000);
+        }
+
+        function restartGame() {
+            score = 0;
+            speed = 7;
+            isGameOver = false;
+            obstacleTimer = 0;
+            for (let o of obstacles) scene.remove(o);
+            obstacles.length = 0;
+            player.position.set(0, 0.45, PLAYER_Z);
+            player.userData.targetX = 0;
+            document.getElementById('game-over').style.display = 'none';
+            // Recargar para avisar a Laravel (opcional pero seguro)
+            window.location.reload();
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            update(clock.getDelta());
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
